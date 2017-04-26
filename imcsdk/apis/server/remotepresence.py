@@ -30,17 +30,18 @@ CIFS_URI_PATTERN = re.compile('^//\d+\.\d+\.\d+\.\d+\/')
 NFS_URI_PATTERN = re.compile('^\d+\.\d+\.\d+\.\d+\:\/')
 
 
-def kvm_setup(handle, max_sessions=1, port=2068,
-              encrypt=False, mirror_locally=False, server_id=1):
+def kvm_setup(handle, total_sessions=1, port=2068,
+              encryption_state="disabled", local_video_state="disabled",
+              server_id=1):
     """
     This method will setup and enable kvm console access
 
     Args:
         handle (ImcHandle)
-        max_sessions (int): Max no. of sessions allowed (1-4)
+        total_sessions (int): Max no. of sessions allowed (1-4)
         port (int): Port used for kvm communication
-        encrypt (bool): Encrypt video information sent over kvm
-        mirror_locally (bool): Mirror the kvm session on local monitor
+        encryption_state (bool): Encrypt video information sent over kvm
+        local_video_state (bool): Mirror the kvm session on local monitor
         server_id (int): Server Id to be specified for C3260 platforms
 
     Returns:
@@ -48,24 +49,23 @@ def kvm_setup(handle, max_sessions=1, port=2068,
 
     Examples:
         kvm_setup(handle,
-                  max_sessions=4,
+                  total_sessions=4,
                   port=4000,
-                  encrypt=True,
-                  mirror_locally=False)
+                  encryption_state=True,
+                  local_video_state=False)
     """
-
-    kvm_mo = CommKvm(parent_mo_or_dn=_get_comm_mo_dn(handle, server_id))
+    mo = CommKvm(parent_mo_or_dn=_get_comm_mo_dn(handle, server_id))
     params = {
         "admin_state": "enabled",
-        "total_sessions": str(max_sessions),
-        "port": str(port),
-        "encryption_state": ("disabled", "enabled") [encrypt],
-        "local_video_state": ("disabled", "enabled") [mirror_locally],
+        "total_sessions": total_sessions,
+        "port": port,
+        "encryption_state": encryption_state,
+        "local_video_state": local_video_state
     }
 
-    kvm_mo.set_prop_multiple(**params)
-    handle.set_mo(kvm_mo)
-    return kvm_mo
+    mo.set_prop_multiple(**params)
+    handle.set_mo(mo)
+    return mo
 
 
 def kvm_disable(handle, server_id=1):
@@ -85,7 +85,7 @@ def kvm_disable(handle, server_id=1):
     handle.set_mo(kvm_mo)
 
 
-def is_kvm_enabled(handle, server_id=1):
+def is_kvm_enabled(handle, server_id=1, **kwargs):
     """
     This method will check if kvm console access is enabled
 
@@ -96,17 +96,20 @@ def is_kvm_enabled(handle, server_id=1):
     Returns:
         None
     """
+    mo = CommKvm(parent_mo_or_dn=_get_comm_mo_dn(handle, server_id))
+    mo = handle.query_dn(mo.dn)
 
-    kvm_mo = CommKvm(parent_mo_or_dn=_get_comm_mo_dn(handle, server_id))
-    kvm_mo = handle.query_dn(kvm_mo.dn)
-    return(kvm_mo.admin_state.lower() == "enabled")
+    kwargs["admin_state"] = "enabled"
+    mo_exists = mo.check_prop_match(**kwargs)
+    return (mo_exists, mo if mo_exists else None)
 
 
 def _get_vmedia_mo_dn(handle, server_id=1):
     return _get_comm_mo_dn(handle, server_id) + "/vmedia-svc"
 
 
-def vmedia_setup(handle, encrypt=False, low_power_usb=False, server_id=1):
+def vmedia_setup(handle, encryption_state="disabled", low_power_usb="disabled",
+                 server_id=1):
     """
     This method will enable vmedia and setup the properties
 
@@ -122,18 +125,40 @@ def vmedia_setup(handle, encrypt=False, low_power_usb=False, server_id=1):
     Examples:
         vmedia_setup(handle, True, True)
     """
-
     vmedia_mo = CommVMedia(parent_mo_or_dn=_get_comm_mo_dn(handle, server_id))
     params = {
         "admin_state": "enabled",
-        "encryption_state": ("disabled", "enabled")[encrypt],
-        "low_power_usb_state": ("disabled", "enabled")[low_power_usb],
-        "low_power_usb": ("disabled", "enabled")[low_power_usb],
+        "encryption_state": encryption_state,
+        "low_power_usb_state": low_power_usb,
+        "low_power_usb": low_power_usb
     }
 
     vmedia_mo.set_prop_multiple(**params)
     handle.set_mo(vmedia_mo)
     return vmedia_mo
+
+
+def is_vmedia_enabled(handle, server_id=1, **kwargs):
+    """
+    This method will check if vmedia is enabled
+
+    Args:
+        handle (ImcHandle)
+        server_id (int): Server Id to be specified for C3260 platforms
+
+    Returns:
+        None
+    """
+    mo = CommVMedia(parent_mo_or_dn=_get_comm_mo_dn(handle, server_id))
+    mo = handle.query_dn(mo.dn)
+
+    if 'low_power_usb' in kwargs and hasattr(mo, 'low_power_usb_state'):
+        kwargs['low_power_usb_state'] = kwargs['low_power_usb']
+        kwargs.pop('low_power_usb', None)
+
+    kwargs["admin_state"] = "enabled"
+    mo_exists = mo.check_prop_match(**kwargs)
+    return (mo_exists, mo if mo_exists else None)
 
 
 def vmedia_disable(handle, server_id=1):
@@ -191,15 +216,15 @@ def vmedia_get_existing_status(handle, server_id=1):
             in handle.query_children(in_dn=_get_vmedia_mo_dn(handle, server_id))]
 
 
-def vmedia_mount_add(handle, volume_name, mount_protocol,
-                     mount_options=None, remote_share=None,
-                     remote_file=None, user_id="", password="", server_id=1):
+def vmedia_mount_add(handle, volume_name, remote_share, remote_file,
+                     map="nfs", mount_options="nolock",
+                     user_id=None, password=None, server_id=1):
     """
     This method will setup the vmedia mapping
     Args:
         handle (ImcHandle)
         volume_name (string): Name of the volume or identity of the image
-        mount_protocol (string): "cifs", "nfs", "www"
+        map (string): "cifs", "nfs", "www"
         mount_options (string): Options to be passed while mounting the image
         remote_share (string): URI of the image
         remote_file (string): name of the image
@@ -214,7 +239,7 @@ def vmedia_mount_add(handle, volume_name, mount_protocol,
         vmedia_mount_add(
             handle,
             volume_name="c",
-            mount_protocol="www",
+            map="www",
             mount_options="noauto", "nolock" etc.
             remote_share="http://1.1.1.1/files",
             remote_file="ubuntu-14.04.2-server-amd64.iso",
@@ -225,7 +250,7 @@ def vmedia_mount_add(handle, volume_name, mount_protocol,
     vmediamap_mo = CommVMediaMap(
         parent_mo_or_dn=_get_vmedia_mo_dn(handle, server_id),
         volume_name=volume_name)
-    vmediamap_mo.map = mount_protocol
+    vmediamap_mo.map = map
     if mount_options:
         vmediamap_mo.mount_options = mount_options
     vmediamap_mo.remote_share = remote_share
@@ -275,13 +300,13 @@ def vmedia_mount_iso_uri(handle, uri, user_id=None, password=None,
 
     # Set the Map based on the protocol
     if urlparse.urlsplit(uri).scheme == 'http':
-        mount_protocol = "www"
+        map = "www"
     elif urlparse.urlsplit(uri).scheme == 'https':
-        mount_protocol = "www"
+        map = "www"
     elif CIFS_URI_PATTERN.match(uri):
-        mount_protocol = "cifs"
+        map = "cifs"
     elif NFS_URI_PATTERN.match(uri):
-        mount_protocol = "nfs"
+        map = "nfs"
     else:
         # Raise ValueError and bail
         raise ValueError("Unsupported protocol: " +
@@ -297,7 +322,7 @@ def vmedia_mount_iso_uri(handle, uri, user_id=None, password=None,
     vmedia_mount_add(
         handle,
         volume_name=remote_file,
-        mount_protocol=mount_protocol,
+        map=map,
         mount_options=mount_options,
         remote_share=remote_share,
         remote_file=remote_file,
@@ -366,6 +391,36 @@ def vmedia_mount_remove(handle, volume_name, server_id=1):
         raise ValueError("Volume '%s' does not exist" % volume_name)
 
     handle.remove_mo(vmediamap_mo)
+
+
+def vmedia_mount_exists(handle, volume_name, server_id=1, **kwargs):
+    """
+    This method will remove the vmedia mapping referred to by the volume name
+
+    Args:
+        handle (ImcHandle)
+        volume_name (string): Name of the volume or identity of the image
+        server_id (int): Server Id to be specified for C3260 platforms
+
+    Returns:
+        None
+
+    Raises:
+        Exception when the mapping is not found
+
+    Examples:
+        vmedia_mount_remove(handle, volume_name="c")
+    """
+    mo = CommVMediaMap(
+        parent_mo_or_dn=_get_vmedia_mo_dn(handle, server_id),
+        volume_name=volume_name)
+    mo = handle.query_dn(dn=mo.dn)
+    if mo is None:
+        return False, None
+
+    mo_exists = mo.check_prop_match(**kwargs)
+    return (mo_exists, mo if mo_exists else None)
+
 
 
 def vmedia_mount_remove_all(handle, server_id=1):
