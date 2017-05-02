@@ -372,14 +372,9 @@ def boot_order_policy_get(handle, dump=False, server_id=1):
         if device.dn == boot_security_policy.dn:
             continue
 
-        device_name = "NA"
-        if hasattr(device, "name"):
-            device_name = device.name
-
         device_type = _get_device_type("boot-order-policy", device)
         boot_order_list.append({"order": device.order,
-                                "device-type": device_type,
-                                "name": device_name})
+                                "device-type": device_type})
 
     sorted_boot_order_list = sorted(
         boot_order_list, key=lambda x: x["order"])
@@ -390,12 +385,20 @@ def boot_order_policy_get(handle, dump=False, server_id=1):
 
         for device_tuple in sorted_boot_order_list:
             log.info(
-                " %s %s %s" %
+                " %s %s" %
                 (device_tuple["order"].ljust(5),
-                 device_tuple["device-type"].center(10),
-                 device_tuple["name"].center(20)))
+                 device_tuple["device-type"].center(10)))
 
     return sorted_boot_order_list
+
+
+def _get_boot_device(boot_policy, device_name):
+    from imcsdk.imccoreutils import load_class
+
+    device_meta = policy_device_dict[device_name]
+    class_struct = load_class(device_meta["class_id"])
+    access = device_meta["access"]
+    return class_struct(parent_mo_or_dn=boot_policy, access=access)
 
 
 def boot_order_policy_set(handle, reboot_on_update=False,
@@ -410,8 +413,8 @@ def boot_order_policy_set(handle, reboot_on_update=False,
         reboot_on_update (bool): True, False
         secure_boot (bool): secure boot
         boot_devices (list of dict): format
-            [{"order":'1', "device-type":"cdrom", "name":"cdrom0"},
-             {"order":'2', "device-type":"lan", "name":"lan"}]
+            [{"order":'1', "device-type":"cdrom"},
+             {"order":'2', "device-type":"lan"}]
 
             boot-order(string): Order
             boot-device-type(string): "efi", "lan", "storage", "cdrom", "fdd"
@@ -426,41 +429,98 @@ def boot_order_policy_set(handle, reboot_on_update=False,
             handle,
             reboot_on_update=False,
             secure_boot=True,
-            boot_devices = [{"order":'1', "device-type":"cdrom", "name":"cdrom0"},
-                            {"order":'2', "device-type":"lan", "name":"lan"}]
+            boot_devices = [{"order":'1', "device-type":"cdrom"},
+                            {"order":'2', "device-type":"lan"}]
 
 
     """
-
-    # IMC expects the devices to be configured in sorted order
-    boot_devices = sorted(boot_devices, key=lambda x: x["order"])
-
     from imcsdk.mometa.lsboot.LsbootDef import LsbootDef
     from imcsdk.mometa.lsboot.LsbootBootSecurity import LsbootBootSecurity
+    from imcsdk.imcconstants import Status
 
     server_dn = imccoreutils.get_server_dn(handle, server_id)
-
     boot_policy = LsbootDef(parent_mo_or_dn=server_dn)
     boot_policy.reboot_on_update = ("no", "yes")[reboot_on_update]
     handle.set_mo(boot_policy)
 
-    secure_boot_policy = LsbootBootSecurity(parent_mo_or_dn=boot_policy.dn)
+    secure_boot_policy = LsbootBootSecurity(parent_mo_or_dn=boot_policy)
     # Secure boot policy is supported only from ImcVersion 2.0(1a)
     if handle.version >= secure_boot_policy.get_version(handle.platform):
         secure_boot_policy.secure_boot = ("disabled", "enabled")[secure_boot]
-        handle.set_mo(secure_boot_policy)
+    handle.set_mo(secure_boot_policy)
 
-    boot_policy_child_mos = handle.query_children(in_dn=boot_policy.dn)
-    for mo in boot_policy_child_mos:
-        if mo.dn == secure_boot_policy.dn:
+    # IMC expects the devices to be configured in sorted order
+    desired_boot_order = sorted(boot_devices, key=lambda x: x["order"])
+    desired_boot_devices = [bd['device-type'] for bd in desired_boot_order]
+
+    existing_boot_order = boot_order_policy_get(handle, server_id=server_id)
+    existing_boot_devices = [bd['device-type'] for bd in existing_boot_order]
+
+    boot_policy = handle.query_dn(boot_policy.dn)
+
+    for device in desired_boot_order:
+        device_name = device['device-type']
+        device_order = device['order']
+        boot_device=_get_boot_device(boot_policy, device_name)
+        boot_device.order = device_order
+
+    for device_name in existing_boot_devices:
+        if device_name in desired_boot_devices:
             continue
-        # handle.remove_mo(mo)
+        boot_device=_get_boot_device(boot_policy, device_name)
+        boot_device.status = Status.DELETED
 
-    for device in boot_devices:
-        _add_boot_device(handle, boot_policy.dn, device)
-
-    boot_policy = handle.query_classid("LsbootDef")
+    boot_policy = handle.set_mo(boot_policy)
     return boot_policy
+
+def boot_order_policy_exists(handle, **kwargs):
+    from imcsdk.mometa.lsboot.LsbootBootSecurity import LsbootBootSecurity
+    from imcsdk.imccoreutils import _set_server_dn
+    from imcsdk.apis.utils import _is_valid_arg
+
+    server_dn = _set_server_dn(handle, kwargs)
+    mos = handle.query_children(in_dn=server_dn,
+                                class_id="LsbootDef")
+    if len(mos) == 0:
+        return False, "no Mos found"
+
+    mo = mos[0]
+
+    reboot_on_update = kwargs.get("reboot_on_update")
+    if isinstance(reboot_on_update, bool):
+        reboot_on_update = ("no", "yes")[reboot_on_update]
+
+    secure_boot = kwargs.get("secure_boot")
+    if isinstance(secure_boot, bool):
+        secure_boot = ("disabled", "enabled")[secure_boot]
+
+    args = {"reboot_on_update": reboot_on_update}
+    if not mo.check_prop_match(**args):
+        return False, "parent MO property values do not match"
+
+    secure_boot_policy = LsbootBootSecurity(parent_mo_or_dn=mo)
+    if handle.version >= secure_boot_policy.get_version(handle.platform):
+        secure_boot_policy = handle.query_dn(secure_boot_policy.dn)
+        if not secure_boot_policy.check_prop_match(secure_boot=secure_boot):
+            return False, "secure boot policy  property values do not match"
+
+    if _is_valid_arg("boot_devices", kwargs):
+        in_boot_order = sorted(
+            kwargs["boot_devices"],
+            key=lambda x: x["order"])
+        configured_boot_order =boot_order_policy_get(
+            handle, server_id=kwargs.get("server_id"))
+
+        if len(in_boot_order) != len(configured_boot_order):
+            return False, "length mismatch"
+        for i in range(0, len(in_boot_order)):
+            if not (
+            in_boot_order[i]["order"] ==
+                    configured_boot_order[i]["order"] and
+            in_boot_order[i]["device-type"] ==
+                    configured_boot_order[i]["device-type"]):
+                return False, "dictionaries do not match"
+    return True, None
 
 
 def _get_bios_dn(handle, server_id=1):
