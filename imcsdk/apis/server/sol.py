@@ -23,7 +23,7 @@ from imcsdk.mometa.sol.SolIf import SolIfConsts
 
 def sol_get(handle, server_id=1, caller="sol_get"):
     parent_dn = get_server_dn(handle, server_id)
-    dn = parent_dn + "\sol-if"
+    dn = parent_dn + "/sol-if"
     mo = handle.query_dn(dn)
     if mo is None:
         raise ImcOperationError(caller,
