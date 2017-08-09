@@ -17,6 +17,9 @@ This module implements all the server actions
 """
 
 import time
+import logging
+import datetime
+
 from imcsdk.imcexception import ImcOperationError
 from imcsdk.mometa.compute.ComputeRackUnit import ComputeRackUnit,\
         ComputeRackUnitConsts
@@ -28,6 +31,8 @@ from imcsdk.mometa.equipment.EquipmentChassisLocatorLed \
     import EquipmentChassisLocatorLed, EquipmentChassisLocatorLedConsts
 from imcsdk.imccoreutils import get_server_dn, IMC_PLATFORM, _set_server_dn
 from imcsdk.apis.utils import _is_valid_arg
+
+log = logging.getLogger('imc')
 
 
 def _set_power_state(handle, server_dn, state):
@@ -44,7 +49,8 @@ def _set_power_state(handle, server_dn, state):
         "up": mo_class.ADMIN_POWER_UP,
         "down": mo_class.ADMIN_POWER_DOWN,
         "graceful-down": mo_class.ADMIN_POWER_SOFT_SHUT_DOWN,
-        "cycle": mo_class.ADMIN_POWER_CYCLE_IMMEDIATE
+        "cycle": mo_class.ADMIN_POWER_CYCLE_IMMEDIATE,
+        "reboot": mo_class.ADMIN_POWER_BMC_RESET_IMMEDIATE
     }
 
     server_mo.admin_power = state_dict[state]
@@ -249,6 +255,79 @@ def server_power_cycle(handle, timeout=120, interval=5, server_id=1, **kwargs):
                           interval=interval, server_id=server_id)
 
     return handle.query_dn(server_dn)
+
+
+def _validate_connection(handle, timeout=15 * 60):
+    """
+    Monitors IMC connection, if connection exists return True, else False
+    Args:
+        handle (ImcHandle)
+        timeout (number): timeout in seconds
+    Returns:
+        True/False(bool)
+    Raises:
+        Exception if unable to connect to IMC
+    """
+
+    import datetime
+
+    connected = False
+    start = datetime.datetime.now()
+    while not connected:
+        try:
+            # If the session is already established,
+            # this will validate the session
+            connected = handle.login()
+        except Exception as e:
+            # IMC may been in the middle of activation,
+            # hence connection would fail
+            log.debug("Login to IMC failed: %s", str(e))
+
+        if not connected:
+            try:
+                log.debug("Login to IMC, elapsed time %ds",
+                          (datetime.datetime.now() - start).total_seconds())
+                handle.login(force=True)
+                log.debug("Login successful")
+                connected = True
+            except:
+                log.debug("Login failed. Sleeping for 60 seconds")
+                time.sleep(60)
+            if (datetime.datetime.now() - start).total_seconds() > timeout:
+                raise Exception("TimeOut: Unable to login to IMC")
+    return connected
+
+
+def cimc_reboot(handle, timeout=15*60, server_id=1, **kwargs):
+    """
+    This method will reboot the CIMC immediately.
+
+    Args:
+        handle(ImcHandle)
+        server_id (int): Server Id to be specified for C3260 platforms
+        kwargs: key=value paired arguments
+
+
+    Returns:
+        ComputeRackUnit object for non-C3260 platform
+        ComputeServerNode object for C3260 platform
+
+    Example:
+        cimc_reboot(handle) for non-C3260 platforms
+        cimc_reboot(handle, timeout=120, interval=10) \
+                for non-C3260 platforms
+        cimc_reboot(handle, server_id=2, timeout=60) for C3260 platforms
+    """
+    import ssl
+
+    server_dn = get_server_dn(handle, server_id)
+    try:
+        _set_power_state(handle, server_dn, "reboot")
+    except ssl.SSLError as e:
+        log.debug("Timeout Error: %s", str(e))
+
+    # Poll until the cimc restarts
+    return _validate_connection(handle, timeout=timeout)
 
 
 def _set_chassis_locator_led_state(handle, enabled, kwargs):
