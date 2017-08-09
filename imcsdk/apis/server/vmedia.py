@@ -151,7 +151,7 @@ def vmedia_mount_get(handle, volume_name, server_id=1):
 
 def vmedia_mount_create(handle, volume_name, remote_share, remote_file,
                         map="www", mount_options="noauto", username="",
-                        password="", server_id=1):
+                        password="", server_id=1, timeout=60):
     """
     This method will setup the vmedia mapping
     Args:
@@ -179,11 +179,7 @@ def vmedia_mount_create(handle, volume_name, remote_share, remote_file,
             username="abcd",
             password="xyz")
     """
-    try:
-        mo = vmedia_mount_get(handle, volume_name)
-        handle.remove_mo(mo)
-    except ImcOperationError:
-        pass
+    vmedia_mount_remove_all(handle, server_id)
 
     mo = CommVMediaMap(parent_mo_or_dn=_get_vmedia_mo_dn(handle, server_id),
                        volume_name=volume_name)
@@ -196,7 +192,23 @@ def vmedia_mount_create(handle, volume_name, remote_share, remote_file,
     mo.password = password
 
     handle.add_mo(mo, modify_present="True")
-    return mo
+
+    wait_time = 0
+    interval = 10
+    while wait_time < timeout:
+        time.sleep(interval)
+        mo = handle.query_dn(mo.dn)
+        existing_mapping_status = mo.mapping_status
+        if existing_mapping_status == "OK":
+            return mo
+        elif re.match(r"ERROR", existing_mapping_status):
+            raise ImcOperationError("vmedia_mount_create",
+                                    mo.mapping_status)
+        wait_time += interval
+
+    raise ImcOperationError("vmedia_mount_create",
+                            "ERROR - Mapped ISO status stuck at %s" %
+                            existing_mapping_status)
 
 
 def vmedia_mount_exists(handle, volume_name, server_id=1, **kwargs):
@@ -205,6 +217,9 @@ def vmedia_mount_exists(handle, volume_name, server_id=1, **kwargs):
         mo = vmedia_mount_get(handle, volume_name)
     except ImcOperationError:
         return False, None
+
+    if 'timeout' in kwargs:
+        del kwargs['timeout']
 
     if 'username' in kwargs:
         username = kwargs['username']
