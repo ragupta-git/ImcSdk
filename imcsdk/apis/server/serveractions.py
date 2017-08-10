@@ -18,7 +18,6 @@ This module implements all the server actions
 
 import time
 import logging
-import datetime
 
 from imcsdk.imcexception import ImcOperationError
 from imcsdk.mometa.compute.ComputeRackUnit import ComputeRackUnit,\
@@ -42,8 +41,9 @@ def _set_power_state(handle, server_dn, state):
     elif handle.platform == IMC_PLATFORM.TYPE_MODULAR:
         mo_class = ComputeServerNodeConsts
     else:
-        raise ImcOperationError("Set Power State", "Unknown platform:%s found" %
-                                handle.platform)
+        raise ImcOperationError(
+            "Set Power State",
+            "Unknown platform:%s found" % handle.platform)
 
     state_dict = {
         "up": mo_class.ADMIN_POWER_UP,
@@ -146,17 +146,19 @@ def server_power_up(handle, timeout=60, interval=5, server_id=1, **kwargs):
         server_power_up(handle, server_id=2, timeout=60)
     """
 
+    change = False
     server_dn = get_server_dn(handle, server_id)
     # Turn power on only if not already powered up
     if server_power_state_get(handle, server_id) != "on":
         _set_power_state(handle, server_dn, "up")
+        change = True
 
     # Poll until the server is powered up
     _wait_for_power_state(handle, "on", timeout=timeout,
                           interval=interval, server_id=server_id)
 
     # Return object with current state
-    return handle.query_dn(server_dn)
+    return handle.query_dn(server_dn), change
 
 
 def server_power_down(handle, timeout=60, interval=5, server_id=1, **kwargs):
@@ -182,16 +184,18 @@ def server_power_down(handle, timeout=60, interval=5, server_id=1, **kwargs):
         server_power_down(handle, server_id=2, timeout=60)
     """
 
+    change = False
     server_dn = get_server_dn(handle, server_id)
     # Turn power off only if not already powered down
     if server_power_state_get(handle, server_id) != "off":
         _set_power_state(handle, server_dn, "down")
+        change = True
 
     # Poll until the server is powered up
     _wait_for_power_state(handle, "off", timeout=timeout,
                           interval=interval, server_id=server_id)
 
-    return handle.query_dn(server_dn)
+    return handle.query_dn(server_dn), change
 
 
 def server_power_down_gracefully(handle, timeout=120, interval=5,
@@ -214,16 +218,18 @@ def server_power_down_gracefully(handle, timeout=120, interval=5,
         server_power_down_gracefully(handle, server_id=2, timeout=60)
     """
 
+    change = False
     server_dn = get_server_dn(handle, server_id)
     # Gracefully power off only if not already powered down
     if server_power_state_get(handle, server_id) != "off":
         _set_power_state(handle, server_dn, "graceful-down")
+        change = True
 
     # Poll until the server is powered up
     _wait_for_power_state(handle, "off", timeout=timeout,
                           interval=interval, server_id=server_id)
 
-    return handle.query_dn(server_dn)
+    return handle.query_dn(server_dn), change
 
 
 def server_power_cycle(handle, timeout=120, interval=5, server_id=1, **kwargs):
@@ -247,6 +253,7 @@ def server_power_cycle(handle, timeout=120, interval=5, server_id=1, **kwargs):
         server_power_cycle(handle, server_id=2, timeout=60) for C3260 platforms
     """
 
+    change = True
     server_dn = get_server_dn(handle, server_id)
     _set_power_state(handle, server_dn, "cycle")
 
@@ -254,7 +261,7 @@ def server_power_cycle(handle, timeout=120, interval=5, server_id=1, **kwargs):
     _wait_for_power_state(handle, "on", timeout=timeout,
                           interval=interval, server_id=server_id)
 
-    return handle.query_dn(server_dn)
+    return handle.query_dn(server_dn), change
 
 
 def _validate_connection(handle, timeout=15 * 60):
