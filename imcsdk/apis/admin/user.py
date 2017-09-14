@@ -17,7 +17,9 @@ This module implements apis to create/delete/modify local users
 """
 
 import logging
+
 from imcsdk.imcexception import ImcOperationError
+from imcsdk.mometa.aaa.AaaUser import AaaUserConsts
 
 log = logging.getLogger('imc')
 
@@ -155,6 +157,21 @@ def _get_local_users(handle):
     return handle.query_classid("AaaUser")
 
 
+def _parse_local_users(users):
+    existing_users = {}
+    free_users = []
+    for user in users:
+        if user.account_status == AaaUserConsts.ACCOUNT_STATUS_INACTIVE and \
+                not user.name:
+            free_users.append(user)
+            continue
+        existing_users[user.name] = user
+
+    free_users = sorted(free_users, key=lambda user: int(user.id))
+
+    return existing_users, free_users
+
+
 def _get_local_user(handle, name):
     users = _get_local_users(handle)
     for user in users:
@@ -164,7 +181,6 @@ def _get_local_user(handle, name):
 
 
 def _get_free_user_id(handle):
-    from imcsdk.mometa.aaa.AaaUser import AaaUserConsts
     users = _get_local_users(handle)
     for user in users:
         if user.account_status == AaaUserConsts.ACCOUNT_STATUS_INACTIVE and \
@@ -175,7 +191,99 @@ def _get_free_user_id(handle):
                             "Max number of users already configured")
 
 
-def local_user_create(handle, name, pwd, priv="read-only"):
+def local_users_create(handle, users):
+    """
+    This method will create a new local user and setup it's role.
+
+    Args:
+        handle (ImcHandle)
+        users (list): list of dictionary
+         keys:
+            name (string): username
+            pwd (string): pwd
+            priv (string): "admin", "read-only", "user"
+            change_pwd (bool): False
+
+    Returns:
+        List of users as [{username: AaaUser}, {username: AaaUser}]
+
+    Raises:
+        Exception when limit on the number of users has exceeded
+    """
+
+    _local_users = _get_local_users(handle)
+    existing_local_users, free_users = _parse_local_users(_local_users)
+    log.debug(existing_local_users)
+    log.debug(free_users)
+
+    local_users = []
+    for user in users:
+        uname = user['name']
+        upwd = user['pwd']
+        upriv = user['priv'] if 'priv' in user else 'read-only'
+
+        args = {"name": uname,
+                "priv": upriv}
+
+        if uname in existing_local_users:
+            local_user = existing_local_users[uname]
+            if 'change_pwd' in user and user['change_pwd']:
+                args["pwd"] = upwd
+        else:
+            local_user = free_users.pop()
+            args["pwd"] = upwd
+            args["account_status"] = AaaUserConsts.ACCOUNT_STATUS_ACTIVE
+
+        log.debug(local_user)
+        local_user.set_prop_multiple(**args)
+        handle.set_mo(local_user)
+        local_users.append({uname: local_user})
+
+    return local_users
+
+
+def local_users_exists(handle, users, ignore_pwd=False):
+    _local_users = _get_local_users(handle)
+    existing_local_users = _parse_local_users(_local_users)[0]
+    log.debug(existing_local_users)
+
+    exists = True
+    local_users_present = []
+    local_users_absent = []
+    for user in users:
+        log.debug(user)
+        uname = user['name']
+        if uname not in existing_local_users or (
+                'change_pwd' in user and user['change_pwd']
+                and not ignore_pwd):
+            exists = False
+            local_users_absent.append(user)
+            continue
+
+        local_users_present.append(user)
+
+    local_users = local_users_present if exists else local_users_absent
+    return exists, local_users
+
+
+def local_users_delete(handle, names):
+    _local_users = _get_local_users(handle)
+    existing_local_users = _parse_local_users(_local_users)[0]
+
+    for name in names:
+        if name not in existing_local_users:
+            log.info("User '%s' does not exist." % name)
+            continue
+        local_user = existing_local_users[name]
+
+        local_user.account_status = AaaUserConsts.ACCOUNT_STATUS_INACTIVE
+        local_user.priv = AaaUserConsts.PRIV_READ_ONLY
+        local_user.admin_action = AaaUserConsts.ADMIN_ACTION_CLEAR
+        handle.set_mo(local_user)
+
+
+def local_user_create(handle, name, pwd, priv="read-only",
+                      change_password=False):
     """
     This method will create a new local user and setup it's role.
 
@@ -202,7 +310,9 @@ def local_user_create(handle, name, pwd, priv="read-only"):
 
     user = _get_local_user(handle, name)
     if user:
-        return local_user_modify(handle, name=name, pwd=pwd, priv=priv)
+        if change_password:
+            return local_user_modify(handle, name=name, pwd=pwd, priv=priv)
+        return local_user_modify(handle, name=name, priv=priv)
 
     available_user_id = _get_free_user_id(handle)
 
@@ -217,7 +327,7 @@ def local_user_create(handle, name, pwd, priv="read-only"):
     return new_user
 
 
-def local_user_exists(handle, **kwargs):
+def local_user_exists(handle, change_password=False, **kwargs):
     """
     This method checks if a user exists with attributes passed
 
@@ -226,7 +336,8 @@ def local_user_exists(handle, **kwargs):
         kwargs: key-value paired arguments used for user attributes
 
     Returns:
-        (True, AaaUser) if the user exists with the properties, else (False, None)
+        (True, AaaUser) if the user exists with the properties,
+        else (False, None)
 
     Examples:
         user_exists(handle, user="abcd", priv="admin")
@@ -234,6 +345,8 @@ def local_user_exists(handle, **kwargs):
 
     users = _get_local_users(handle)
     for user in users:
+        if not change_password:
+            kwargs.pop('pwd', None)
         if user.check_prop_match(**kwargs):
             return True, user
     return False, None
@@ -261,6 +374,7 @@ def local_user_modify(handle, name, **kwargs):
 
     found_user.set_prop_multiple(**kwargs)
     handle.set_mo(found_user)
+    return found_user
 
 
 def local_user_delete(handle, name):
